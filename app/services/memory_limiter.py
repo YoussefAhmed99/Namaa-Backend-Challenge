@@ -26,57 +26,40 @@ def set_limit_linux(memory_mb: int) -> None:
     memory_bytes = memory_mb * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
 
-
 def monitor_process_windows(
-    process: subprocess.Popen,
+    process,
     memory_limit_mb: int,
-    timeout_seconds: float
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    memory_exceeded_callback
+) -> None:
     """
-    Monitor a Windows process for memory and timeout limits.
+    Monitor a multiprocessing.Process for memory limits on Windows.
     
-    Polls the process every 100ms to check:
-    - If timeout exceeded -> kill and return timeout error
-    - If memory exceeded -> kill and return memory error
-    - If process completes -> return stdout/stderr
+    Runs in a separate thread, polls every 100ms.
+    Calls callback and kills process if memory limit exceeded.
     
     Args:
-        process: The subprocess.Popen instance to monitor
+        process: The multiprocessing.Process instance to monitor
         memory_limit_mb: Maximum memory allowed in megabytes
-        timeout_seconds: Maximum execution time in seconds
-        
-    Returns:
-        Tuple of (stdout, stderr, error)
+        memory_exceeded_callback: Function to call when limit exceeded
     """
-    start_time = time.time()
     memory_limit_bytes = memory_limit_mb * 1024 * 1024
     
-    while process.poll() is None:
-        elapsed = time.time() - start_time
-        
-        # Check timeout
-        if elapsed > timeout_seconds:
-            process.kill()
-            process.wait()
-            return None, None, "execution timeout"
-        
-        # Check memory usage
+    while process.is_alive():
         try:
             proc = psutil.Process(process.pid)
             memory_usage = proc.memory_info().rss
+            
             if memory_usage > memory_limit_bytes:
-                process.kill()
-                process.wait()
-                return None, None, "memory limit exceeded"
-        except psutil.NoSuchProcess:
+                # Memory limit exceeded - call callback and kill process
+                memory_exceeded_callback()
+                process.terminate()
+                process.join(timeout=1)
+                if process.is_alive():
+                    process.kill()
+                break
+                
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Process died or can't access - stop monitoring
             break
         
         time.sleep(0.1)
-    
-    # Process finished naturally
-    stdout, stderr = process.communicate()
-    
-    stdout = stdout if stdout else None
-    stderr = stderr if stderr else None
-    
-    return stdout, stderr, None
