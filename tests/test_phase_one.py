@@ -33,8 +33,11 @@ class TestPhaseOne:
         })
         assert response.status_code == 200
         data = response.json()
-        # Check that all values are None (no actual output)
-        assert all(v is None for v in data.values())
+        # Level 3: id is always present, check only output fields
+        assert data.get("stdout") is None
+        assert data.get("stderr") is None
+        assert data.get("error") is None
+        assert "id" in data  # Session ID should always be present
     
     def test_syntax_error(self):
         """Test syntax error returns stderr."""
