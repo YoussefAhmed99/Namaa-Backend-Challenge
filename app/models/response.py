@@ -3,6 +3,7 @@ from typing import Optional
 
 class ExecuteResponse(BaseModel):
     """Response model for code execution."""
+    id: str
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     error: Optional[str] = None
