@@ -12,7 +12,7 @@ class SessionManager:
     _lock = threading.Lock()
     
     MAX_SESSIONS = 40
-    IDLE_TIMEOUT_SECONDS = 300
+    IDLE_TIMEOUT_SECONDS = 60
     
     def __new__(cls):
         """Ensure only one instance exists (Singleton pattern)."""

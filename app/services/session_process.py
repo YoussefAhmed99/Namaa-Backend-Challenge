@@ -2,20 +2,12 @@ import time
 import sys
 import io
 import threading
-import multiprocessing
+import psutil
 from multiprocessing import Process, Queue
 from code import InteractiveInterpreter
 from typing import Tuple, Optional
-from .platform_utils import is_linux
-from .memory_limiter import set_limit_linux, monitor_process_windows
+from .memory_limiter import monitor_process
 from .sandbox import apply_sandbox_to_namespace
-
-# Import psutil for Windows monitoring
-try:
-    import psutil
-except ImportError:
-    psutil = None
-
 
 class SessionProcess:
     """Manages a single persistent interpreter session in a separate process."""
@@ -39,13 +31,13 @@ class SessionProcess:
         )
         self.process.start()
         
-        # Start memory monitoring thread on Windows
-        if not is_linux() and psutil:
+        # Start memory monitoring thread (both platforms)
+        if psutil:
             def on_memory_exceeded():
                 self.memory_exceeded = True
             
             self.monitor_thread = threading.Thread(
-                target=monitor_process_windows,
+                target=monitor_process,
                 args=(self.process, self.MEMORY_LIMIT_MB, on_memory_exceeded),
                 daemon=True
             )
@@ -61,7 +53,7 @@ class SessionProcess:
         Returns:
             Tuple of (stdout, stderr, error)
         """
-        # Check if memory was exceeded (Windows monitoring)
+        # Check if memory was exceeded
         if self.memory_exceeded:
             return None, None, "memory limit exceeded"
         
@@ -77,6 +69,12 @@ class SessionProcess:
             try:
                 result = self.output_queue.get(timeout=self.TIMEOUT_SECONDS)
                 stdout, stderr, error = result
+                
+                # Check if memory was exceeded BEFORE returning results
+                time.sleep(0.05)  # Give monitor thread time to set flag
+                if self.memory_exceeded:
+                    return None, None, "memory limit exceeded"
+                
                 return stdout, stderr, error
                 
             except Exception as timeout_ex:
@@ -87,7 +85,7 @@ class SessionProcess:
                     if self.process.is_alive():
                         self.process.kill()
                     
-                    # Check if it was actually memory exceeded (Windows race condition)
+                    # Check if it was actually memory exceeded (race condition)
                     if self.memory_exceeded:
                         return None, None, "memory limit exceeded"
                     
@@ -118,26 +116,15 @@ def worker_function(input_queue: Queue, output_queue: Queue, memory_limit_mb: in
     Runs in a separate process. Waits for code via input_queue,
     executes it in InteractiveInterpreter, sends results via output_queue.
     
+    Memory is monitored by external thread (both platforms).
+    
     Args:
         input_queue: Queue to receive code from SessionProcess
         output_queue: Queue to send results back to SessionProcess
-        memory_limit_mb: Memory limit in megabytes
+        memory_limit_mb: Memory limit in megabytes (monitored externally)
     """
-    # Set memory limit on Linux
-    # NOTE: We don't use resource.setrlimit on Linux because RLIMIT_AS measures
-    # virtual address space (too strict), not physical RAM like Windows does.
-    # Instead, we'll monitor RSS (physical RAM) using psutil, same as Windows.
-    # This ensures both platforms enforce the same 100 MB limit consistently.
-    
     # Create persistent interpreter
     interpreter = InteractiveInterpreter()
-    
-    # Create psutil Process object BEFORE sandbox (so it can access /proc/ on Linux)
-    # This is needed on both Windows and Linux to monitor memory after code execution
-    self_proc = None
-    if psutil:
-        import os
-        self_proc = psutil.Process(os.getpid())
     
     # Apply sandboxing restrictions (Level 4)
     apply_sandbox_to_namespace(interpreter.locals)
@@ -162,20 +149,7 @@ def worker_function(input_queue: Queue, output_queue: Queue, memory_limit_mb: in
                 # Execute code in interpreter using exec
                 exec(code, interpreter.locals)
                 
-                # Check memory usage immediately after execution (Linux)
-                # IMPORTANT: Check BEFORE capturing output, so MemoryError prevents success response
-                if self_proc:
-                    try:
-                        rss = self_proc.memory_info().rss
-                        if rss > memory_limit_mb * 1024 * 1024:
-                            raise MemoryError("Memory limit exceeded")
-                    except MemoryError:
-                        raise  # Re-raise MemoryError
-                    except (psutil.AccessDenied, psutil.NoSuchProcess):
-                        # Process might have issues, skip check
-                        pass
-                
-                # Get captured output (only reached if memory check passed)
+                # Get captured output
                 stdout_output = stdout_capture.getvalue()
                 stderr_output = stderr_capture.getvalue()
                 
@@ -194,21 +168,16 @@ def worker_function(input_queue: Queue, output_queue: Queue, memory_limit_mb: in
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
                 
-                # Check if it's a MemoryError (Linux memory limit)
-                if isinstance(e, MemoryError):
-                    # Return as system error (like timeout), not stderr
-                    output_queue.put((None, None, "memory limit exceeded"))
-                else:
-                    # Get any stderr that was captured before exception
-                    stderr_output = stderr_capture.getvalue()
-                    
-                    # If no stderr captured, format the exception as stderr
-                    if not stderr_output:
-                        import traceback
-                        stderr_output = traceback.format_exc()
-                    
-                    # Send error as stderr (not as error field)
-                    output_queue.put((None, stderr_output, None))
+                # Get any stderr that was captured before exception
+                stderr_output = stderr_capture.getvalue()
+                
+                # If no stderr captured, format the exception as stderr
+                if not stderr_output:
+                    import traceback
+                    stderr_output = traceback.format_exc()
+                
+                # Send error as stderr (not as error field)
+                output_queue.put((None, stderr_output, None))
                 
         except Exception as e:
             # Worker loop crashed - this will cause is_alive() to return False
