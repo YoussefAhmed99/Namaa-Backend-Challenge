@@ -24,7 +24,12 @@ def set_limit_linux(memory_mb: int) -> None:
     import resource  # Import here, only when function is called on Linux
     
     memory_bytes = memory_mb * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    # Use RLIMIT_AS (virtual address space) at 1.5x the stated limit
+    # This accounts for Python interpreter overhead (~50-70 MB) plus user allocations
+    # With 100 MB base limit: 150 MB allows ~80-100 MB for actual user data
+    # while still catching allocations significantly over the limit
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))  # 150 MB
+
 
 def monitor_process_windows(
     process,

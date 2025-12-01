@@ -8,6 +8,7 @@ from code import InteractiveInterpreter
 from typing import Tuple, Optional
 from .platform_utils import is_linux
 from .memory_limiter import set_limit_linux, monitor_process_windows
+from .sandbox import apply_sandbox_to_namespace
 
 # Import psutil for Windows monitoring
 try:
@@ -123,14 +124,23 @@ def worker_function(input_queue: Queue, output_queue: Queue, memory_limit_mb: in
         memory_limit_mb: Memory limit in megabytes
     """
     # Set memory limit on Linux
-    if is_linux():
-        try:
-            set_limit_linux(memory_limit_mb)
-        except Exception:
-            pass  # Continue even if we can't set limits
+    # NOTE: We don't use resource.setrlimit on Linux because RLIMIT_AS measures
+    # virtual address space (too strict), not physical RAM like Windows does.
+    # Instead, we'll monitor RSS (physical RAM) using psutil, same as Windows.
+    # This ensures both platforms enforce the same 100 MB limit consistently.
     
     # Create persistent interpreter
     interpreter = InteractiveInterpreter()
+    
+    # Create psutil Process object BEFORE sandbox (so it can access /proc/ on Linux)
+    # This is needed on both Windows and Linux to monitor memory after code execution
+    self_proc = None
+    if psutil:
+        import os
+        self_proc = psutil.Process(os.getpid())
+    
+    # Apply sandboxing restrictions (Level 4)
+    apply_sandbox_to_namespace(interpreter.locals)
     
     # Main loop - wait for code and execute
     while True:
@@ -152,7 +162,20 @@ def worker_function(input_queue: Queue, output_queue: Queue, memory_limit_mb: in
                 # Execute code in interpreter using exec
                 exec(code, interpreter.locals)
                 
-                # Get captured output
+                # Check memory usage immediately after execution (Linux)
+                # IMPORTANT: Check BEFORE capturing output, so MemoryError prevents success response
+                if self_proc:
+                    try:
+                        rss = self_proc.memory_info().rss
+                        if rss > memory_limit_mb * 1024 * 1024:
+                            raise MemoryError("Memory limit exceeded")
+                    except MemoryError:
+                        raise  # Re-raise MemoryError
+                    except (psutil.AccessDenied, psutil.NoSuchProcess):
+                        # Process might have issues, skip check
+                        pass
+                
+                # Get captured output (only reached if memory check passed)
                 stdout_output = stdout_capture.getvalue()
                 stderr_output = stderr_capture.getvalue()
                 
@@ -171,16 +194,21 @@ def worker_function(input_queue: Queue, output_queue: Queue, memory_limit_mb: in
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
                 
-                # Get any stderr that was captured before exception
-                stderr_output = stderr_capture.getvalue()
-                
-                # If no stderr captured, format the exception as stderr
-                if not stderr_output:
-                    import traceback
-                    stderr_output = traceback.format_exc()
-                
-                # Send error as stderr (not as error field)
-                output_queue.put((None, stderr_output, None))
+                # Check if it's a MemoryError (Linux memory limit)
+                if isinstance(e, MemoryError):
+                    # Return as system error (like timeout), not stderr
+                    output_queue.put((None, None, "memory limit exceeded"))
+                else:
+                    # Get any stderr that was captured before exception
+                    stderr_output = stderr_capture.getvalue()
+                    
+                    # If no stderr captured, format the exception as stderr
+                    if not stderr_output:
+                        import traceback
+                        stderr_output = traceback.format_exc()
+                    
+                    # Send error as stderr (not as error field)
+                    output_queue.put((None, stderr_output, None))
                 
         except Exception as e:
             # Worker loop crashed - this will cause is_alive() to return False

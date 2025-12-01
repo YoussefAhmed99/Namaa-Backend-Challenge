@@ -11,7 +11,7 @@ class SessionManager:
     _instance = None
     _lock = threading.Lock()
     
-    MAX_SESSIONS = 100
+    MAX_SESSIONS = 40
     IDLE_TIMEOUT_SECONDS = 300
     
     def __new__(cls):
