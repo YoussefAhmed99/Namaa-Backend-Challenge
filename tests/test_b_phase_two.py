@@ -30,6 +30,10 @@ class TestPhaseTwo:
         response = requests.post(f"{BASE_URL}/execute", json={
             "code": "x = bytearray(150 * 1024 * 1024); x[0] = 1"
         })
+        
+        # DEBUG: Print full response
+        print(f"\nDEBUG - Full response: {response.json()}")
+        
         assert response.status_code == 200
         assert response.json()["error"] == "memory limit exceeded"
     

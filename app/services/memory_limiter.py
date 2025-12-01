@@ -1,46 +1,20 @@
-"""Memory limit enforcement for processes."""
+"""Memory limit enforcement via active polling."""
 
 import time
-import subprocess
-from typing import Tuple, Optional
-
-# Only import psutil (Windows will use this)
 import psutil
 
-# Don't import resource at module level - import inside function instead
 
-
-def set_limit_linux(memory_mb: int) -> None:
-    """
-    Set memory limit on Linux using kernel-level resource limits.
-    
-    This function must be called inside the child process (via preexec_fn)
-    before the code execution begins. The kernel will automatically kill
-    the process if it exceeds this limit.
-    
-    Args:
-        memory_mb: Maximum memory allowed in megabytes
-    """
-    import resource  # Import here, only when function is called on Linux
-    
-    memory_bytes = memory_mb * 1024 * 1024
-    # Use RLIMIT_AS (virtual address space) at 1.5x the stated limit
-    # This accounts for Python interpreter overhead (~50-70 MB) plus user allocations
-    # With 100 MB base limit: 150 MB allows ~80-100 MB for actual user data
-    # while still catching allocations significantly over the limit
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))  # 150 MB
-
-
-def monitor_process_windows(
+def monitor_process(
     process,
     memory_limit_mb: int,
     memory_exceeded_callback
 ) -> None:
     """
-    Monitor a multiprocessing.Process for memory limits on Windows.
+    Monitor a multiprocessing.Process for memory limits.
     
     Runs in a separate thread, polls every 100ms.
     Calls callback and kills process if memory limit exceeded.
+    Used on both Windows and Linux.
     
     Args:
         process: The multiprocessing.Process instance to monitor
