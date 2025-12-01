@@ -237,7 +237,7 @@ class TestPhaseThree:
     def test_session_with_memory_limit_still_returns_id(self):
         """Test that even memory errors return a session ID."""
         response = requests.post(f"{BASE_URL}/execute", json={
-            "code": "x = [0] * (101 * 1024 * 1024)"
+            "code": "x = bytearray(150 * 1024 * 1024); x[0] = 1"
         })
         assert response.status_code == 200
         data = response.json()

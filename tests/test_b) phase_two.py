@@ -28,7 +28,7 @@ class TestPhaseTwo:
     def test_memory_limit(self):
         """Test large allocation triggers memory limit."""
         response = requests.post(f"{BASE_URL}/execute", json={
-            "code": "x = [0] * (101 * 1024 * 1024)"
+            "code": "x = bytearray(150 * 1024 * 1024); x[0] = 1"
         })
         assert response.status_code == 200
         assert response.json()["error"] == "memory limit exceeded"
@@ -52,7 +52,7 @@ class TestPhaseTwo:
     def test_small_memory_allocation(self):
         """Test small allocation works."""
         response = requests.post(f"{BASE_URL}/execute", json={
-            "code": "x = [0] * (10 * 1024 * 1024); print('ok')"
+            "code": "x = bytearray(10 * 1024 * 1024); print('ok')"
         })
         assert response.status_code == 200
         assert response.json()["stdout"] == "ok\n"
